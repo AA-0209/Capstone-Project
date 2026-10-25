@@ -106,6 +106,9 @@ ResStatus trip_hold(Trip *trip, int seat_no, const char *name, time_t now)
     if (departed(trip, now)) {
         return RES_ERR_DEPARTED;
     }
+    if (seatmap_get(&trip->seats, seat_no) == NULL) {
+        return RES_ERR_INVALID;    /* seat number out of range */
+    }
     if (seatmap_find_passenger(&trip->seats, name) != -1) {
         return RES_ERR_HAS_SEAT;   /* one seat per passenger per trip */
     }
