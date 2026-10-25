@@ -61,8 +61,15 @@ static int parse_time(const char *s, time_t *out)
     tm.tm_mon  -= 1;
     tm.tm_isdst = -1;   /* let the system decide daylight saving */
 
+    int want_mon = tm.tm_mon;
+    int want_day = tm.tm_mday;
+
     time_t t = mktime(&tm);
     if (t == (time_t)-1) {
+        return 0;
+    }
+    /* mktime "fixes" impossible dates (Feb 31 -> Mar 3); reject those */
+    if (tm.tm_mon != want_mon || tm.tm_mday != want_day) {
         return 0;
     }
     *out = t;

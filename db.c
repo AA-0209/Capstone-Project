@@ -38,6 +38,39 @@ static GDBM_FILE open_gdbm(const TripDB *db, int write)
     return gdbm_open(db->path, 0, mode, 0644, NULL);
 }
 
+/*
+ * A record from disk is not trusted just because its size matches.
+ * Force every string to end in '\0' (so printing can't run past the
+ * buffer), and check every number that is used as an array index.
+ * Returns 1 if the record is usable, 0 if it is corrupt.
+ */
+static int sanitize_trip(Trip *t)
+{
+    t->id[TRIP_ID_LEN - 1] = '\0';
+    t->origin[CITY_LEN - 1] = '\0';
+    t->destination[CITY_LEN - 1] = '\0';
+
+    if (t->seats.num_seats < 1 || t->seats.num_seats > MAX_SEATS) {
+        return 0;
+    }
+    for (int i = 0; i < MAX_SEATS; i++) {
+        Seat *s = &t->seats.seats[i];
+        s->passenger[NAME_LEN - 1] = '\0';
+        if (s->status != SEAT_FREE && s->status != SEAT_HELD && s->status != SEAT_BOOKED) {
+            return 0;
+        }
+    }
+
+    Waitlist *w = &t->waitlist;
+    if (w->head < 0 || w->head >= WAITLIST_MAX || w->count < 0 || w->count > WAITLIST_MAX) {
+        return 0;
+    }
+    for (int i = 0; i < WAITLIST_MAX; i++) {
+        w->names[i][NAME_LEN - 1] = '\0';
+    }
+    return 1;
+}
+
 /* ---------- open / close / locking ---------- */
 
 ResStatus db_open(TripDB *db, const char *path)
@@ -163,6 +196,9 @@ ResStatus db_read(TripDB *db, const char *id, Trip *out)
         rc = RES_ERR_IO;   /* record from a different build: don't trust it */
     } else {
         memcpy(out, value.dptr, sizeof *out);
+        if (!sanitize_trip(out)) {
+            rc = RES_ERR_IO;   /* corrupt record: bad seat count, status, or queue index */
+        }
     }
     free(value.dptr);
     return rc;

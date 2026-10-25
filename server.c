@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -23,6 +24,9 @@
 #define DEFAULT_DB     "trips.gdbm"
 #define MAX_TRIPS      128
 #define SHOW_BUF_LEN   8192
+#define LIST_BUF_LEN   (MAX_TRIPS * MAX_LINE + MAX_LINE)
+#define IDLE_TIMEOUT   300   /* seconds a client may sit idle before disconnect */
+#define SEND_TIMEOUT   30    /* seconds a send may block on a client not reading */
 
 static volatile sig_atomic_t g_stop = 0;
 
@@ -120,38 +124,59 @@ static void format_time(time_t t, char *out, size_t len)
 
 /* ---------- command handlers ---------- */
 
+/*
+ * Builds the whole reply in memory while locked, then unlocks BEFORE
+ * sending. A client that stops reading can then never hold the lock
+ * and freeze everyone else's bookings (AI audit finding #1).
+ */
 static void do_list(int fd, TripDB *db)
 {
     char ids[MAX_TRIPS][TRIP_ID_LEN];
     time_t now = time(NULL);
 
+    char *buf = malloc(LIST_BUF_LEN);
+    if (buf == NULL) {
+        send_error(fd, RES_ERR_IO);
+        return;
+    }
+
     if (db_lock(db, 0) != RES_OK) {
+        free(buf);
         send_error(fd, RES_ERR_IO);
         return;
     }
     int n = db_list(db, ids, MAX_TRIPS);
     if (n < 0) {
         db_unlock(db);
+        free(buf);
         send_error(fd, RES_ERR_IO);
         return;
     }
 
-    proto_send_line(fd, n == 0 ? "OK 0 trips (use ADDTRIP to create one)" : "OK");
+    size_t off = (size_t)snprintf(buf, LIST_BUF_LEN, "%s\n",
+                                  n == 0 ? "OK 0 trips (use ADDTRIP to create one)" : "OK");
     for (int i = 0; i < n; i++) {
         Trip t;
         if (db_read(db, ids[i], &t) != RES_OK) {
             continue;
         }
         trip_expire_holds(&t, now);   /* display only; saved on next write */
-        char when[32], line[MAX_LINE];
+        char when[32];
         format_time(t.departure, when, sizeof when);
-        snprintf(line, sizeof line, "TRIP %s %s -> %s %s seats %d/%d waitlist %d",
-                 t.id, t.origin, t.destination, when,
-                 seatmap_available(&t.seats), t.seats.num_seats,
-                 waitlist_count(&t.waitlist));
-        proto_send_line(fd, line);
+        int w = snprintf(buf + off, LIST_BUF_LEN - off,
+                         "TRIP %s %s -> %s %s seats %d/%d waitlist %d\n",
+                         t.id, t.origin, t.destination, when,
+                         seatmap_available(&t.seats), t.seats.num_seats,
+                         waitlist_count(&t.waitlist));
+        if (w < 0 || (size_t)w >= LIST_BUF_LEN - off) {
+            break;   /* buffer full; stop adding (can't happen at MAX_TRIPS) */
+        }
+        off += (size_t)w;
     }
     db_unlock(db);
+
+    send_lines(fd, buf);   /* network I/O happens with no lock held */
+    free(buf);
 }
 
 static void do_show(int fd, TripDB *db, const Command *cmd)
@@ -373,6 +398,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* Put the server and its children in their own process group, so the
+       kill(0, SIGTERM) at shutdown reaches only them. Already true when
+       started from a terminal; harmless if it fails. */
+    setpgid(0, 0);
+
     /* Make sure the database can be created/opened before accepting anyone */
     TripDB check;
     if (db_open(&check, db_path) != RES_OK) {
@@ -388,7 +418,9 @@ int main(int argc, char *argv[])
     }
 
     int yes = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0) {
+        perror("setsockopt SO_REUSEADDR");   /* not fatal: restart may need a short wait */
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
@@ -409,8 +441,14 @@ int main(int argc, char *argv[])
     while (!g_stop) {
         int client_fd = accept(listen_fd, NULL, NULL);
         if (client_fd < 0) {
-            if (errno == EINTR) {
-                continue;   /* signal arrived; loop re-checks g_stop */
+            if (errno == EINTR || errno == ECONNABORTED || errno == EPROTO ||
+                errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;   /* signal or one bad connection: keep serving */
+            }
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+                perror("accept (out of resources, retrying)");
+                sleep(1);   /* give finished children time to free descriptors */
+                continue;
             }
             perror("accept");
             break;
@@ -423,7 +461,18 @@ int main(int argc, char *argv[])
             continue;
         }
         if (pid == 0) {                 /* child */
+            /* Ctrl+C / kill must end children too, not just the parent */
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTERM, SIG_DFL);
             close(listen_fd);
+
+            /* Drop clients that go idle or stop reading our replies */
+            struct timeval rcv = { IDLE_TIMEOUT, 0 };
+            struct timeval snd = { SEND_TIMEOUT, 0 };
+            if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof rcv) < 0 ||
+                setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof snd) < 0) {
+                perror("setsockopt timeout");
+            }
             printf("[%d] client connected\n", (int)getpid());
             fflush(stdout);
             handle_client(client_fd, db_path);
@@ -437,5 +486,11 @@ int main(int argc, char *argv[])
 
     close(listen_fd);
     printf("\nServer shutting down\n");
+
+    /* Stop any children still serving clients, then reap them.
+       The parent gets this SIGTERM too, but on_stop just sets g_stop again. */
+    kill(0, SIGTERM);
+    while (wait(NULL) > 0) {
+    }
     return 0;
 }
