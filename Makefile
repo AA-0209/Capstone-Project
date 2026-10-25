@@ -28,7 +28,7 @@ client: $(CLIENT_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
 
 # Modules finished so far; extended as each step is completed
-objs: seatmap.o waitlist.o trip.o
+objs: seatmap.o waitlist.o trip.o db.o
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
