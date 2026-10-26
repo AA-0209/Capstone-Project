@@ -78,8 +78,13 @@ Future expansions: user accounts, per-trip locking, seat classes, and multi-stop
 # AI Audit reflection
 
 AI Architectural review prompt:
+
+
 <img width="311" height="168" alt="image" src="https://github.com/user-attachments/assets/c10df3c2-8545-4af9-a39a-9a662de4d59a" />
 
 Result:
+
+
+
 <img width="387" height="562" alt="image" src="https://github.com/user-attachments/assets/babbaf02-6b0c-43ca-857d-12f69b6962af" />
 <img width="387" height="535" alt="image" src="https://github.com/user-attachments/assets/232604cc-e5d8-4c8a-b8d6-9c91072a9c88" />
