@@ -88,3 +88,15 @@ Result:
 
 <img width="387" height="562" alt="image" src="https://github.com/user-attachments/assets/babbaf02-6b0c-43ca-857d-12f69b6962af" />
 <img width="387" height="535" alt="image" src="https://github.com/user-attachments/assets/232604cc-e5d8-4c8a-b8d6-9c91072a9c88" />
+
+
+Bugs and leaks prompt:
+
+<img width="938" height="125" alt="image" src="https://github.com/user-attachments/assets/2ce25a3f-a609-4891-9a79-566184db3e2e" />
+
+Result:
+
+<img width="1187" height="790" alt="image" src="https://github.com/user-attachments/assets/9b9a725d-f8e1-4a8d-a112-452ca1e45da4" />
+
+<img width="982" height="202" alt="image" src="https://github.com/user-attachments/assets/e665d8e5-9f8d-44f7-8041-682452d53ab5" />
+
